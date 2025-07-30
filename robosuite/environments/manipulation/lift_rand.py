@@ -6,7 +6,7 @@ from robosuite.environments.manipulation.manipulation_env import ManipulationEnv
 from robosuite.models.arenas import TableArena
 from robosuite.models.objects import BoxObject
 from robosuite.models.tasks import ManipulationTask
-from robosuite.utils.mjcf_utils import CustomMaterial
+from robosuite.utils.mjcf_utils import CustomMaterial, array_to_string
 from robosuite.utils.observables import Observable, sensor
 from robosuite.utils.placement_samplers import UniformRandomSampler
 from robosuite.utils.transform_utils import convert_quat
@@ -45,13 +45,16 @@ class LiftRand(ManipulationEnv):
             The expected keys and corresponding value types are specified below:
 
             :`'magnitude'`: The scale factor of uni-variate random noise applied to each of a robot's given initial
-                joint positions, joint velocities, and end effector orientation. The noise is uni-variate and is
-                applied so that the magnitude of the noise is 'magnitude' / 10 for the given joint position, and
-                'magnitude' / 10 for the given joint velocity, and 'magnitude' for the given end effector
-                orientation. Should either be single float if same noise is to be used for all robots or else it
-                should be a list of the same length as "robots" param
-
+                joint positions. Setting this value to `None` or 0.0 results in no noise being applied.
+                If "gaussian" type of noise is applied then this magnitude scales the standard deviation applied,
+                If "uniform" type of noise is applied then this magnitude sets the bounds of the sampling range
             :`'type'`: Type of noise to apply. Can either specify "gaussian" or "uniform"
+
+            Should either be single dict if same noise value is to be used for all robots or else it should be a
+            list of the same length as "robots" param
+
+            :Note: Specifying "default" will automatically use the default noise settings.
+                Specifying None will automatically create the required dict with "magnitude" set to 0.0.
 
         table_full_size (3-tuple): x, y, and z dimensions of the table.
 
@@ -71,9 +74,6 @@ class LiftRand(ManipulationEnv):
         placement_initializer (ObjectPositionSampler): if provided, will
             be used to place objects on every reset, else a UniformRandomSampler
             is used by default.
-
-        use_white_table_texture (bool): if True, use a white texture for the table surface.
-            If False, use the default cereal box texture.
 
         has_renderer (bool): If true, render the simulation state in
             a viewer instead of headless mode.
@@ -150,14 +150,13 @@ class LiftRand(ManipulationEnv):
         gripper_types="default",
         base_types="default",
         initialization_noise="default",
-        table_full_size=(10, 10, 0.05),
+        table_full_size=(0.8, 0.8, 0.05),
         table_friction=(1.0, 5e-3, 1e-4),
         use_camera_obs=True,
         use_object_obs=True,
         reward_scale=1.0,
         reward_shaping=False,
         placement_initializer=None,
-        use_white_table_texture=False,
         has_renderer=False,
         has_offscreen_renderer=True,
         render_camera="frontview",
@@ -176,6 +175,7 @@ class LiftRand(ManipulationEnv):
         camera_segmentations=None,  # {None, instance, class, element}
         renderer="mjviewer",
         renderer_config=None,
+        white_table=True,
     ):
         # settings for table top
         self.table_full_size = table_full_size
@@ -189,18 +189,18 @@ class LiftRand(ManipulationEnv):
         # whether to use ground-truth object states
         self.use_object_obs = use_object_obs
 
+        # table color flag
+        self.white_table = white_table
+
         # object placement initializer
         self.placement_initializer = placement_initializer
-
-        # table texture setting
-        self.use_white_table_texture = use_white_table_texture
 
         super().__init__(
             robots=robots,
             env_configuration=env_configuration,
             controller_configs=controller_configs,
+            base_types="default",
             gripper_types=gripper_types,
-            base_types=base_types,
             initialization_noise=initialization_noise,
             use_camera_obs=use_camera_obs,
             has_renderer=has_renderer,
@@ -255,11 +255,12 @@ class LiftRand(ManipulationEnv):
             reward = 2.25
 
         # use a shaping reward
-        if self.reward_shaping:
+        elif self.reward_shaping:
+
             # reaching reward
-            cube_pos = self.sim.data.body_xpos[self.cube_body_id]
-            gripper_site_pos = self.sim.data.site_xpos[self.robots[0].eef_site_id]
-            dist = np.linalg.norm(gripper_site_pos - cube_pos)
+            dist = self._gripper_to_target(
+                gripper=self.robots[0].gripper, target=self.cube.root_body, target_type="body", return_distance=True
+            )
             reaching_reward = 1 - np.tanh(10.0 * dist)
             reward += reaching_reward
 
@@ -280,70 +281,107 @@ class LiftRand(ManipulationEnv):
         super()._load_model()
 
         # Adjust base pose accordingly
-        # xpos = self.robots[0].robot_model.base_xpos_offset["table"](self.table_full_size[0])
-        xpos = self.robots[0].robot_model.base_xpos_offset["table"](0.8)
+        xpos = self.robots[0].robot_model.base_xpos_offset["table"](self.table_full_size[0])
         self.robots[0].robot_model.set_base_xpos(xpos)
-
-        # Apply random transformations to table offset
-        randomized_table_offset = self._apply_random_table_transformations()
 
         # load model for table top workspace
         mujoco_arena = TableArena(
             table_full_size=self.table_full_size,
             table_friction=self.table_friction,
-            table_offset=randomized_table_offset,
+            table_offset=self.table_offset,
         )
 
         # Arena always gets set to zero origin
         mujoco_arena.set_origin([0, 0, 0])
 
-        # Apply random rotation to the table
-        self._apply_random_table_rotation(mujoco_arena)
-
-        # Customize table material with cereal texture
+        # Customize table surface material according to flag
         self._customize_table_material(mujoco_arena)
 
         # initialize objects of interest
-        tex_attrib = {
-            "type": "2d",
-            "file": "/home/tianchongj/workspace/script_robosuite_demos/robosuite_source/robosuite/models/assets/textures/glass.png",
-        }
-        mat_attrib = {
-            "texrepeat": "1 1",
-            "specular": "0.8",
-            "shininess": "0.8",
-            "reflectance": "0.5",
-        }
-        glass_material = CustomMaterial(
-            texture="Glass",
-            tex_name="glass_cube",
-            mat_name="glass_cube_mat",
-            tex_attrib=tex_attrib,
-            mat_attrib=mat_attrib,
-        )
         self.cube = BoxObject(
             name="cube",
             size_min=[0.020, 0.020, 0.020],  # [0.015, 0.015, 0.015],
             size_max=[0.022, 0.022, 0.022],  # [0.018, 0.018, 0.018])
             rgba=[0, 1, 0, 1],
-            material=glass_material,
+            material=None,
         )
-        self.objects = [self.cube]
+        # ------------------------------------------------------------------
+        # Add a thin, visual-only plane that sits slightly above the table and
+        # carries the cereal texture. The plane has a free joint so its pose
+        # is serialized in the flattened mujoco state, but its geom is purely
+        # visual (no collisions).
+        # ------------------------------------------------------------------
+        import os, robosuite
+        from robosuite.utils.mjcf_utils import TEXTURES
+
+        if self.white_table:
+            plane_material = None  # plain white via rgba
+            plane_rgba = [1, 1, 1, 1]
+        else:
+            # Build absolute path for cereal texture
+            asset_root = os.path.join(os.path.dirname(robosuite.__file__), "models", "assets")
+            cereal_path = os.path.join(asset_root, TEXTURES["Cereal"])
+            plane_material = CustomMaterial(
+                texture=cereal_path,
+                tex_name="cereal_tex",
+                mat_name="cereal_table_mat",
+                tex_attrib={"type": "2d"},
+                mat_attrib={"texrepeat": "3 3", "specular": "0.2", "shininess": "0.1"},
+            )
+            plane_rgba = None
+
+        # Plane covers entire table top (use half-sizes for BoxObject)
+        self.plane = BoxObject(
+            name="plane",
+            size_min=[10, 10, 0.001],
+            size_max=[10, 10, 0.001],
+            rgba=plane_rgba,
+            material=plane_material,
+            joints="default",            # free joint so pose in state vector
+            density=500.0,                # ensures sufficient mass / inertia
+            obj_type="all",              # create both collision + visual geoms
+            duplicate_collision_geoms=False,
+        )
+
+        plane_z = self.table_offset[2]
+        self.plane._obj.set("pos", array_to_string([0, 0, plane_z]))
+
+        # Disable physical contacts so it is like a visual plane
+        for g in self.plane._obj.iter("geom"):
+            g.set("contype", "0")
+            g.set("conaffinity", "0")
+        # Turn on gravity compensation so it stays fixed in space
+        self.plane._obj.set("gravcomp", "1")
+
+        # ---------------- Plane-specific sampler -------------------------
+        self.plane_sampler = UniformRandomSampler(
+            name="PlaneSampler",
+            mujoco_objects=self.plane,
+            x_range=[-0.05, 0.05],
+            y_range=[-0.05, 0.05],
+            rotation=None,  # uniform random yaw
+            ensure_object_boundary_in_range=False,
+            ensure_valid_placement=False,
+            reference_pos=self.table_offset,
+            z_offset=0.0,
+        )
+
+        # ------------------------------------------------------------------
 
         # Create placement initializer
         if self.placement_initializer is not None:
             self.placement_initializer.reset()
-            self.placement_initializer.add_objects(self.objects)
+            self.placement_initializer.add_objects(self.cube)
         else:
             self.placement_initializer = UniformRandomSampler(
                 name="ObjectSampler",
-                mujoco_objects=self.objects,
-                x_range=[-0.2, 0.2],
-                y_range=[-0.2, 0.2],
+                mujoco_objects=self.cube,
+                x_range=[-0.03, 0.03],
+                y_range=[-0.03, 0.03],
                 rotation=None,
                 ensure_object_boundary_in_range=False,
                 ensure_valid_placement=True,
-                reference_pos=randomized_table_offset,  # Use randomized table position as reference
+                reference_pos=self.table_offset,
                 z_offset=0.01,
             )
 
@@ -351,127 +389,58 @@ class LiftRand(ManipulationEnv):
         self.model = ManipulationTask(
             mujoco_arena=mujoco_arena,
             mujoco_robots=[robot.robot_model for robot in self.robots],
-            mujoco_objects=self.objects,
+            mujoco_objects=[self.cube, self.plane],
         )
 
-    def _apply_random_table_transformations(self):
-        """
-        Apply random shift to table position (up to 0.5 meters in x and y)
-        
-        Returns:
-            np.array: Randomized table offset
-        """
-        # Generate random offsets up to ±0.5 meters in x and y directions
-        random_x_offset = np.random.uniform(-0.5, 0.5)
-        random_y_offset = np.random.uniform(-0.5, 0.5)
-        
-        # Apply random offsets to the original table offset
-        randomized_offset = np.array(self.table_offset) + np.array([random_x_offset, random_y_offset, 0])
-        
-        return randomized_offset
-
-    def _apply_random_table_rotation(self, arena):
-        """
-        Apply random rotation to the table (up to 360 degrees around z-axis)
-        
-        Args:
-            arena: The TableArena object to rotate
-        """
-        import xml.etree.ElementTree as ET
-        from robosuite.utils.transform_utils import axisangle2quat
-        from robosuite.utils.mjcf_utils import array_to_string
-        
-        # Generate random rotation angle (0 to 2π radians = 0 to 360 degrees)
-        random_angle = np.random.uniform(0, 2 * np.pi)
-        
-        # Convert to axis-angle representation (z-axis with magnitude = angle)
-        axis_angle = np.array([random_angle, 0, 0])
-        
-        # Convert axis-angle to quaternion
-        rotation_quat = axisangle2quat(axis_angle)
-        
-        # Apply rotation to the table body
-        if arena.table_body is not None:
-            # Get current position
-            current_pos = arena.table_body.get("pos")
-            if current_pos is None:
-                current_pos = "0 0 0"
-            
-            # Set the quaternion rotation
-            arena.table_body.set("quat", array_to_string(rotation_quat))
-
     def _customize_table_material(self, arena):
-        """
-        Customizes the table surface material to use either white texture or cereal box texture
-        
-        Args:
-            arena: The TableArena object to customize
-        """
+        """Apply white or cereal texture material to the table surface."""
         import xml.etree.ElementTree as ET
-        
-        if self.use_white_table_texture:
-            # Create white material element without texture
-            mat_element = ET.Element("material", attrib={
-                "name": "white_table_mat",
-                "reflectance": "0.5",
-                "rgba": "1 1 1 1"  # Pure white color
-            })
+
+        if self.white_table:
+            # Simple white material (no texture)
+            mat_element = ET.Element(
+                "material",
+                attrib={
+                    "name": "white_table_mat",
+                    "reflectance": "0.5",
+                    "rgba": "1 1 1 1",
+                },
+            )
             arena.asset.append(mat_element)
-            
-            # Apply the white material to the table visual geom
             arena.table_visual.set("material", "white_table_mat")
         else:
-            # Create cereal texture element
-            tex_element = ET.Element("texture", attrib={
-                "type": "2d",
-                "file": "/home/tianchongj/workspace/script_robosuite_demos/robosuite_source/robosuite/models/assets/textures/cereal.png",
-                "rgb1": "1 1 1",
-                "name": "tex-cereal-table"
-            })
+            # Cereal texture + material (reuse existing cereal.png in assets)
+            import os, robosuite
+            from robosuite.utils.mjcf_utils import TEXTURES
+
+            asset_root = os.path.join(os.path.dirname(robosuite.__file__), "models", "assets")
+            cereal_path = os.path.join(asset_root, TEXTURES["Cereal"])  # absolute path
+
+            tex_element = ET.Element(
+                "texture",
+                attrib={
+                    "type": "2d",
+                    "file": cereal_path,
+                    "rgb1": "1 1 1",
+                    "name": "tex-cereal-table",
+                },
+            )
             arena.asset.append(tex_element)
-            
-            # Create cereal material element  
-            mat_element = ET.Element("material", attrib={
-                "name": "cereal_table_mat",
-                "reflectance": "0.5",
-                "texrepeat": "3 3",  # Repeat texture 3x3 times for better coverage
-                "texture": "tex-cereal-table",
-                "texuniform": "true"
-            })
+
+            mat_element = ET.Element(
+                "material",
+                attrib={
+                    "name": "cereal_table_mat",
+                    "reflectance": "0.5",
+                    "texrepeat": "1 1",
+                    "texture": "tex-cereal-table",
+                    "texuniform": "true",
+                },
+            )
             arena.asset.append(mat_element)
-            
-            # Apply the new material to the table visual geom
+
             arena.table_visual.set("material", "cereal_table_mat")
 
-    def _make_robot_base_transparent(self):
-        """
-        Makes the robot base and first joint transparent by setting alpha values to 0
-        """
-        # Robot base/mount geoms
-        base_geom_names = ["fixed_mount0_torso_vis", "fixed_mount0_pedestal_vis"]
-        
-        # First joint (link0) geoms
-        first_joint_geoms = [f"robot0_g{i}_vis" for i in range(12)]
-        
-        # Combine all geoms to make transparent
-        transparent_geom_names = base_geom_names + first_joint_geoms
-        
-        for geom_id in range(self.sim.model.ngeom):
-            geom_name = self.sim.model.geom_id2name(geom_id)
-            if geom_name is not None:
-                # Check if this is a geom to make transparent (group 1 = visual)
-                if (self.sim.model.geom_group[geom_id] == 1 and 
-                    geom_name in transparent_geom_names):
-                    # Set alpha to 0 (transparent)
-                    self.sim.model.geom_rgba[geom_id, 3] = 0.0
-
-    def reset(self):
-        """
-        Extends env reset to make robot base transparent
-        """
-        obs = super().reset()
-        self._make_robot_base_transparent()
-        return obs
 
     def _setup_references(self):
         """
@@ -538,12 +507,17 @@ class LiftRand(ManipulationEnv):
         # Reset all object positions using initializer sampler if we're not directly loading from an xml
         if not self.deterministic_reset:
 
-            # Sample from the placement initializer for all objects
+            # Sample placements
             object_placements = self.placement_initializer.sample()
+            plane_placements = self.plane_sampler.sample()
+            # Merge dicts so we can handle all placements in one loop
+            all_placements = {**object_placements, **plane_placements}
 
-            # Loop through all objects and reset their positions
-            for obj_pos, obj_quat, obj in object_placements.values():
-                self.sim.data.set_joint_qpos(obj.joints[0], np.concatenate([np.array(obj_pos), np.array(obj_quat)]))
+            # Apply placements
+            for obj_pos, obj_quat, obj in all_placements.values():
+                self.sim.data.set_joint_qpos(
+                    obj.joints[0], np.concatenate([np.array(obj_pos), np.array(obj_quat)])
+                )
 
     def visualize(self, vis_settings):
         """
@@ -572,4 +546,4 @@ class LiftRand(ManipulationEnv):
         table_height = self.model.mujoco_arena.table_offset[2]
 
         # cube is higher than the table top above a margin
-        return cube_height > table_height + 0.04 
+        return cube_height > table_height + 0.04
