@@ -3,10 +3,14 @@ from robosuite.environments.base import make
 # Manipulation environments
 from robosuite.environments.manipulation.lift import Lift
 from robosuite.environments.manipulation.lift_rand import LiftRand
+from robosuite.environments.manipulation.lift_test import LiftTest
 from robosuite.environments.manipulation.stack import Stack
 from robosuite.environments.manipulation.nut_assembly import NutAssembly
 from robosuite.environments.manipulation.pick_place import PickPlace
+from robosuite.environments.manipulation.can_rand import CanRand
+from robosuite.environments.manipulation.square_rand import SquareRand
 from robosuite.environments.manipulation.door import Door
+from robosuite.environments.manipulation.door_rand import DoorRand
 from robosuite.environments.manipulation.wipe import Wipe
 from robosuite.environments.manipulation.tool_hang import ToolHang
 from robosuite.environments.manipulation.two_arm_lift import TwoArmLift

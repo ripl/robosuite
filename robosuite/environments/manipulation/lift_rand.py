@@ -284,6 +284,11 @@ class LiftRand(ManipulationEnv):
         xpos = self.robots[0].robot_model.base_xpos_offset["table"](self.table_full_size[0])
         self.robots[0].robot_model.set_base_xpos(xpos)
 
+        # Make the robot mount / base invisible (hide all base geoms)
+        base_model = self.robots[0].robot_model.base
+        for geom in base_model.worldbody.iter("geom"):
+            geom.set("rgba", array_to_string([0, 0, 0, 0]))
+
         # load model for table top workspace
         mujoco_arena = TableArena(
             table_full_size=self.table_full_size,
@@ -296,6 +301,16 @@ class LiftRand(ManipulationEnv):
 
         # Customize table surface material according to flag
         self._customize_table_material(mujoco_arena)
+
+        # Make floor, walls, and table invisible
+        mujoco_arena.floor.set("rgba", array_to_string([0, 0, 0, 0]))
+        for geom in mujoco_arena.worldbody.iter("geom"):
+            name = geom.get("name", "")
+            if name.startswith("wall_"):
+                geom.set("rgba", array_to_string([0, 0, 0, 0]))
+        for geom in [mujoco_arena.table_visual, mujoco_arena.table_collision] + mujoco_arena.table_legs_visual:
+            if geom is not None:
+                geom.set("rgba", array_to_string([0, 0, 0, 0]))
 
         # initialize objects of interest
         self.cube = BoxObject(
@@ -330,11 +345,15 @@ class LiftRand(ManipulationEnv):
             )
             plane_rgba = None
 
-        # Plane covers entire table top (use half-sizes for BoxObject)
+        # Plane covers entire table top (use table half-sizes for BoxObject)
+        plane_half_size = [
+            float(mujoco_arena.table_half_size[0]),
+            float(mujoco_arena.table_half_size[1]),
+            0.001,
+        ]
         self.plane = BoxObject(
             name="plane",
-            size_min=[10, 10, 0.001],
-            size_max=[10, 10, 0.001],
+            size=plane_half_size,
             rgba=plane_rgba,
             material=plane_material,
             joints="default",            # free joint so pose in state vector
@@ -357,8 +376,8 @@ class LiftRand(ManipulationEnv):
         self.plane_sampler = UniformRandomSampler(
             name="PlaneSampler",
             mujoco_objects=self.plane,
-            x_range=[-0.05, 0.05],
-            y_range=[-0.05, 0.05],
+            x_range=[-0.2, 0.2],
+            y_range=[-0.2, 0.2],
             rotation=None,  # uniform random yaw
             ensure_object_boundary_in_range=False,
             ensure_valid_placement=False,
@@ -366,6 +385,59 @@ class LiftRand(ManipulationEnv):
             z_offset=0.0,
         )
 
+        # ------------------------------------------------------------------
+        # Add a matching plane on the floor using the floor texture
+        # ------------------------------------------------------------------
+        import os, robosuite
+        floor_tex_path = os.path.join(
+            os.path.dirname(robosuite.__file__),
+            "models",
+            "assets",
+            "textures",
+            "light-gray-floor-tile.png",
+        )
+        floor_plane_material = CustomMaterial(
+            texture=floor_tex_path,
+            tex_name="floor_tex",
+            mat_name="floor_plane_mat",
+            tex_attrib={"type": "2d"},
+            mat_attrib={"texrepeat": "20 20", "specular": "0.0", "shininess": "0.0"},
+        )
+
+        self.floor_plane = BoxObject(
+            name="floor_plane",
+            size_min=[10, 10, 0.001],
+            size_max=[10, 10, 0.001],
+            rgba=None,
+            material=floor_plane_material,
+            joints="default",
+            density=500.0,
+            obj_type="all",
+            duplicate_collision_geoms=False,
+        )
+
+        floor_z = 0.0
+        self.floor_plane._obj.set("pos", array_to_string([0, 0, floor_z]))
+
+        for g in self.floor_plane._obj.iter("geom"):
+            g.set("contype", "0")
+            g.set("conaffinity", "0")
+        self.floor_plane._obj.set("gravcomp", "1")
+        # ------------------------------------------------------------------
+
+        # ---------------- Floor-plane-specific sampler ---------------------
+        self.floor_plane_sampler = UniformRandomSampler(
+            name="FloorPlaneSampler",
+            mujoco_objects=self.floor_plane,
+            x_range=[-2.0, 2.0],
+            y_range=[-2.0, 2.0],
+            rotation=[0.0, 2 * np.pi],
+            rotation_axis="z",
+            ensure_object_boundary_in_range=False,
+            ensure_valid_placement=False,
+            reference_pos=np.array([0.0, 0.0, 0.0]),
+            z_offset=0.0,
+        )
         # ------------------------------------------------------------------
 
         # Create placement initializer
@@ -376,8 +448,8 @@ class LiftRand(ManipulationEnv):
             self.placement_initializer = UniformRandomSampler(
                 name="ObjectSampler",
                 mujoco_objects=self.cube,
-                x_range=[-0.03, 0.03],
-                y_range=[-0.03, 0.03],
+                x_range=[-0.2, 0.2],
+                y_range=[-0.2, 0.2],
                 rotation=None,
                 ensure_object_boundary_in_range=False,
                 ensure_valid_placement=True,
@@ -389,7 +461,7 @@ class LiftRand(ManipulationEnv):
         self.model = ManipulationTask(
             mujoco_arena=mujoco_arena,
             mujoco_robots=[robot.robot_model for robot in self.robots],
-            mujoco_objects=[self.cube, self.plane],
+            mujoco_objects=[self.cube, self.plane, self.floor_plane],
         )
 
     def _customize_table_material(self, arena):
@@ -510,8 +582,9 @@ class LiftRand(ManipulationEnv):
             # Sample placements
             object_placements = self.placement_initializer.sample()
             plane_placements = self.plane_sampler.sample()
+            floor_plane_placements = self.floor_plane_sampler.sample()
             # Merge dicts so we can handle all placements in one loop
-            all_placements = {**object_placements, **plane_placements}
+            all_placements = {**object_placements, **plane_placements, **floor_plane_placements}
 
             # Apply placements
             for obj_pos, obj_quat, obj in all_placements.values():
