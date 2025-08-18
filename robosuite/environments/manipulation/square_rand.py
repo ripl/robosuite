@@ -1,10 +1,12 @@
 import numpy as np
+import xml.etree.ElementTree as ET
 
 import robosuite.utils.transform_utils as T
 from robosuite.environments.manipulation.manipulation_env import ManipulationEnv
 from robosuite.models.arenas import TableArena
-from robosuite.models.objects import SquareNutObject, BoxObject
+from robosuite.models.objects import SquareNutObject, BoxObject, CompositeBodyObject
 from robosuite.models.objects.primitive.cylinder import CylinderObject
+from robosuite.models.objects import BoxObject
 from robosuite.models.tasks import ManipulationTask
 from robosuite.utils.observables import Observable, sensor
 from robosuite.utils.placement_samplers import UniformRandomSampler
@@ -187,7 +189,7 @@ class SquareRand(ManipulationEnv):
             mujoco_objects=self.table_plane,
             x_range=[-0.2, 0.2],
             y_range=[-0.2, 0.2],
-            rotation=None,
+                        rotation=None,
             ensure_object_boundary_in_range=False,
             ensure_valid_placement=False,
             reference_pos=self.table_offset,
@@ -200,35 +202,73 @@ class SquareRand(ManipulationEnv):
             x_range=[-2.0, 2.0],
             y_range=[-2.0, 2.0],
             rotation=[0.0, 2 * np.pi],
-            rotation_axis="z",
-            ensure_object_boundary_in_range=False,
+                        rotation_axis="z",
+                        ensure_object_boundary_in_range=False,
             ensure_valid_placement=False,
             reference_pos=np.array([0.0, 0.0, 0.0]),
             z_offset=0.0,
         )
 
-        # Objects: square nut (free) and fixed cylinder peg
+        # Objects: square nut (free) and peg assembly (cylinder + base as one moving body)
         self.square = SquareNutObject(name="Square")
-        self.peg = CylinderObject(
-            name="Peg",
+        peg_cyl = CylinderObject(
+            name="PegCyl",
             size=[0.012, 0.05],  # radius, half-length
-            joints=None,         # fixed to world
+            joints="default",
             rgba=[0.6, 0.6, 0.6, 1.0],
             obj_type="all",
+            density=2000.0,
         )
+        peg_base = BoxObject(
+            name="PegBase",
+            size=[0.06, 0.06, 0.005],
+            rgba=[0.5, 0.5, 0.5, 1.0],
+            joints=None,
+            obj_type="all",
+            density=2000.0,
+        )
+        # Set collision masks on child parts before composing
+        for g in peg_cyl._obj.iter("geom"):
+            g.set("contype", "2")
+            g.set("conaffinity", "1")
+        for g in peg_base._obj.iter("geom"):
+            g.set("contype", "2")
+            g.set("conaffinity", "1")
+        # Build composite peg with a free joint so it's in flattened state and moves as one
+        self.peg = CompositeBodyObject(
+            name="Peg",
+            objects=[peg_cyl, peg_base],
+            object_locations=[
+                [0.0, 0.0, 0.055],   # cylinder center above base (0.05 half-length + 0.005 base half-thickness)
+                [0.0, 0.0, 0.0],     # base centered at origin
+            ],
+            object_quats=None,
+            object_parents=None,
+            joints="default",
+        )
+        # Do NOT account for the base in XY separation during placement: use cylinder radius only
+        self.peg._horizontal = peg_cyl.horizontal_radius
+
+        # Ensure composite peg geoms collide with square but not robot arm
+        for g in self.peg._obj.iter("geom"):
+            g.set("contype", "2")
+            g.set("conaffinity", "1")
+        # - Square: allow collisions with peg bit by including bit 2 in conaffinity (1|2 = 3)
+        for g in self.square._obj.iter("geom"):
+            g.set("conaffinity", "3")
 
         # One sampler for both; ensures non-overlap and uniform xy in [-0.2, 0.2]
         self.sampler = UniformRandomSampler(
             name="SquarePegSampler",
             mujoco_objects=[self.square, self.peg],
-            x_range=[-0.20, 0.20],
-            y_range=[-0.20, 0.20],
+            x_range=[-0.18, 0.18],
+            y_range=[-0.18, 0.18],
             rotation=None,
             rotation_axis="z",
-            ensure_object_boundary_in_range=True,
-            ensure_valid_placement=True,
-            reference_pos=self.table_offset,
-            z_offset=0.01,
+            ensure_object_boundary_in_range=False,
+                        ensure_valid_placement=True,
+                        reference_pos=self.table_offset,
+            z_offset=0.0,
         )
 
         self.model = ManipulationTask(
@@ -241,6 +281,7 @@ class SquareRand(ManipulationEnv):
         super()._setup_references()
         self.square_body_id = self.sim.model.body_name2id(self.square.root_body)
         self.peg_body_id = self.sim.model.body_name2id(self.peg.root_body)
+        # No mocap anchor; peg is simply very heavy with a free joint
 
     def _setup_observables(self):
         observables = super()._setup_observables()
@@ -274,13 +315,16 @@ class SquareRand(ManipulationEnv):
         if not self.deterministic_reset:
             placements = self.sampler.sample()
             for obj_pos, obj_quat, obj in placements.values():
-                if obj is self.square:
+                # Only set qpos for objects with free joints
+                if hasattr(obj, "joints") and obj.joints and len(obj.joints) > 0:
                     self.sim.data.set_joint_qpos(
                         obj.joints[0], np.concatenate([np.array(obj_pos), np.array(obj_quat)])
                     )
-                else:  # fixed peg (no joint)
-                    self.sim.model.body_pos[self.peg_body_id] = obj_pos
-                    self.sim.model.body_quat[self.peg_body_id] = obj_quat
+                else:
+                    # Directly set body pose for jointless part (peg base)
+                    body_id = self.sim.model.body_name2id(obj.root_body)
+                    self.sim.model.body_pos[body_id] = np.array(obj_pos)
+                    self.sim.model.body_quat[body_id] = np.array(obj_quat)
 
             # Sample and place planes
             tp_places = self.table_plane_sampler.sample()
@@ -309,9 +353,9 @@ class SquareRand(ManipulationEnv):
         dist_eef = min(
             [
                 np.linalg.norm(self.sim.data.site_xpos[self.robots[0].eef_site_id[arm]] - square_pos)
-                for arm in self.robots[0].arms
-            ]
-        )
+                    for arm in self.robots[0].arms
+                ]
+            )
         r_reach = 1 - np.tanh(10.0 * dist_eef)
         gripper_away = r_reach < 0.6
 

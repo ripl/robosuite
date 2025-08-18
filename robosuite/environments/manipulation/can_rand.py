@@ -298,9 +298,19 @@ class CanRand(ManipulationEnv):
             z_offset=0.0,
         )
 
-        # Objects: one can + one visual target can
+        # Objects: one can + one visual target can (target is a copy with physics disabled)
         self.can = CanObject(name="Can")
-        self.target = CanVisualObject(name="VisualCan")
+        self.target = CanObject(name="VisualCan")
+        # Make target visual-only and semi-transparent: disable contacts and set rgba
+        for g in self.target._obj.iter("geom"):
+            g.set("contype", "0")
+            g.set("conaffinity", "0")
+            # Remove material so RGBA is respected (prevents textured appearance)
+            if "material" in g.attrib:
+                del g.attrib["material"]
+            g.set("rgba", array_to_string([0.8, 0.8, 0.8, 0.3]))
+        # Keep mass / inertia from CanObject so free joint is valid, but counteract gravity
+        self.target._obj.set("gravcomp", "1")
 
         # Placement ranges across the table with a margin
         self.can_sampler = UniformRandomSampler(
@@ -326,7 +336,7 @@ class CanRand(ManipulationEnv):
             ensure_object_boundary_in_range=True,
             ensure_valid_placement=True,
             reference_pos=self.table_offset,
-            z_offset=0.0,  # we will set final z explicitly to table height in reset
+            z_offset=0.0,
         )
 
         # Task graph
@@ -409,33 +419,25 @@ class CanRand(ManipulationEnv):
             self.sim.data.set_joint_qpos(
                 self.floor_plane.joints[0], np.concatenate([np.array(fp_pos), np.array(fp_quat)])
             )
-            # Place the visual target slightly above table to avoid z-fighting
+            # Place the visual target via its free joint so it's included in flattened state
+            # Match target height to the actual can's height for clear visual alignment
             goal_pos = np.array(goal_pos)
-            goal_pos[2] = float(self.table_offset[2] - self.target.bottom_offset[-1] + 0.001)
-            self.sim.model.body_pos[self.target_body_id] = goal_pos
-            self.sim.model.body_quat[self.target_body_id] = goal_quat
+            goal_pos[2] = float(can_pos[2])
+            self.sim.data.set_joint_qpos(
+                self.target.joints[0], np.concatenate([np.array(goal_pos), np.array(goal_quat)])
+            )
 
     def _check_success(self):
-        """Returns True if can is near visual target, gripper is away, and z within band."""
+        """Returns True if can is near visual target in XY and within table-height band."""
         can_p = self.sim.data.body_xpos[self.can_body_id]
         goal_p = self.sim.data.body_xpos[self.target_body_id]
         xy_close = np.linalg.norm(can_p[:2] - goal_p[:2]) <= self.place_tolerance
-
-        # encourage release similar to PickPlace
-        dist_eef = min(
-            [
-                np.linalg.norm(self.sim.data.site_xpos[self.robots[0].eef_site_id[arm]] - can_p)
-                    for arm in self.robots[0].arms
-                ]
-            )
-        r_reach = 1 - np.tanh(10.0 * dist_eef)
-        gripper_away = r_reach < 0.6
 
         # near table height band
         table_h = self.table_offset[2]
         z_ok = table_h < can_p[2] < table_h + 0.1
 
-        return bool(xy_close and gripper_away and z_ok)
+        return bool(xy_close and z_ok)
 
     def visualize(self, vis_settings):
         """Visualize gripper distance to the can in the viewer."""
