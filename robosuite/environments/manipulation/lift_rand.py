@@ -175,7 +175,7 @@ class LiftRand(ManipulationEnv):
         camera_segmentations=None,  # {None, instance, class, element}
         renderer="mjviewer",
         renderer_config=None,
-        white_table=True,
+        white_table=False,
     ):
         # settings for table top
         self.table_full_size = table_full_size
@@ -329,28 +329,16 @@ class LiftRand(ManipulationEnv):
         import os, robosuite
         from robosuite.utils.mjcf_utils import TEXTURES
 
-        if self.white_table:
-            plane_material = None  # plain white via rgba
-            plane_rgba = [1, 1, 1, 1]
-        else:
-            # Build absolute path for cereal texture
-            asset_root = os.path.join(os.path.dirname(robosuite.__file__), "models", "assets")
-            cereal_path = os.path.join(asset_root, TEXTURES["Cereal"])
-            plane_material = CustomMaterial(
-                texture=cereal_path,
-                tex_name="cereal_tex",
-                mat_name="cereal_table_mat",
-                tex_attrib={"type": "2d"},
-                mat_attrib={"texrepeat": "3 3", "specular": "0.2", "shininess": "0.1"},
-            )
-            plane_rgba = None
-
-        # Plane covers entire table top (use table half-sizes for BoxObject)
+        plane_material = None  # plain white via rgba
+        plane_rgba = [1, 1, 1, 1]
         plane_half_size = [
             float(mujoco_arena.table_half_size[0]),
             float(mujoco_arena.table_half_size[1]),
             0.001,
         ]
+        if self.white_table: # large white table
+            plane_half_size = [10., 10., 0.001]
+
         self.plane = BoxObject(
             name="plane",
             size=plane_half_size,
@@ -468,50 +456,17 @@ class LiftRand(ManipulationEnv):
         """Apply white or cereal texture material to the table surface."""
         import xml.etree.ElementTree as ET
 
-        if self.white_table:
-            # Simple white material (no texture)
-            mat_element = ET.Element(
-                "material",
-                attrib={
-                    "name": "white_table_mat",
-                    "reflectance": "0.5",
-                    "rgba": "1 1 1 1",
-                },
-            )
-            arena.asset.append(mat_element)
-            arena.table_visual.set("material", "white_table_mat")
-        else:
-            # Cereal texture + material (reuse existing cereal.png in assets)
-            import os, robosuite
-            from robosuite.utils.mjcf_utils import TEXTURES
-
-            asset_root = os.path.join(os.path.dirname(robosuite.__file__), "models", "assets")
-            cereal_path = os.path.join(asset_root, TEXTURES["Cereal"])  # absolute path
-
-            tex_element = ET.Element(
-                "texture",
-                attrib={
-                    "type": "2d",
-                    "file": cereal_path,
-                    "rgb1": "1 1 1",
-                    "name": "tex-cereal-table",
-                },
-            )
-            arena.asset.append(tex_element)
-
-            mat_element = ET.Element(
-                "material",
-                attrib={
-                    "name": "cereal_table_mat",
-                    "reflectance": "0.5",
-                    "texrepeat": "1 1",
-                    "texture": "tex-cereal-table",
-                    "texuniform": "true",
-                },
-            )
-            arena.asset.append(mat_element)
-
-            arena.table_visual.set("material", "cereal_table_mat")
+        # Simple white material (no texture)
+        mat_element = ET.Element(
+            "material",
+            attrib={
+                "name": "white_table_mat",
+                "reflectance": "0.5",
+                "rgba": "1 1 1 1",
+            },
+        )
+        arena.asset.append(mat_element)
+        arena.table_visual.set("material", "white_table_mat")
 
 
     def _setup_references(self):
