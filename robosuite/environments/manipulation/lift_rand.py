@@ -176,6 +176,7 @@ class LiftRand(ManipulationEnv):
         renderer="mjviewer",
         renderer_config=None,
         white_table=False,
+        original=False,
     ):
         # settings for table top
         self.table_full_size = table_full_size
@@ -191,6 +192,9 @@ class LiftRand(ManipulationEnv):
 
         # table color flag
         self.white_table = white_table
+
+        # original lift-style visualization toggle
+        self.original = original
 
         # object placement initializer
         self.placement_initializer = placement_initializer
@@ -285,9 +289,10 @@ class LiftRand(ManipulationEnv):
         self.robots[0].robot_model.set_base_xpos(xpos)
 
         # Make the robot mount / base invisible (hide all base geoms)
-        base_model = self.robots[0].robot_model.base
-        for geom in base_model.worldbody.iter("geom"):
-            geom.set("rgba", array_to_string([0, 0, 0, 0]))
+        if not self.original:
+            base_model = self.robots[0].robot_model.base
+            for geom in base_model.worldbody.iter("geom"):
+                geom.set("rgba", array_to_string([0, 0, 0, 0]))
 
         # load model for table top workspace
         mujoco_arena = TableArena(
@@ -303,14 +308,15 @@ class LiftRand(ManipulationEnv):
         self._customize_table_material(mujoco_arena)
 
         # Make floor, walls, and table invisible
-        mujoco_arena.floor.set("rgba", array_to_string([0, 0, 0, 0]))
-        for geom in mujoco_arena.worldbody.iter("geom"):
-            name = geom.get("name", "")
-            if name.startswith("wall_"):
-                geom.set("rgba", array_to_string([0, 0, 0, 0]))
-        for geom in [mujoco_arena.table_visual, mujoco_arena.table_collision] + mujoco_arena.table_legs_visual:
-            if geom is not None:
-                geom.set("rgba", array_to_string([0, 0, 0, 0]))
+        if not self.original:
+            mujoco_arena.floor.set("rgba", array_to_string([0, 0, 0, 0]))
+            for geom in mujoco_arena.worldbody.iter("geom"):
+                name = geom.get("name", "")
+                if name.startswith("wall_"):
+                    geom.set("rgba", array_to_string([0, 0, 0, 0]))
+            for geom in [mujoco_arena.table_visual, mujoco_arena.table_collision] + mujoco_arena.table_legs_visual:
+                if geom is not None:
+                    geom.set("rgba", array_to_string([0, 0, 0, 0]))
 
         # initialize objects of interest
         self.cube = BoxObject(
@@ -359,6 +365,10 @@ class LiftRand(ManipulationEnv):
             g.set("conaffinity", "0")
         # Turn on gravity compensation so it stays fixed in space
         self.plane._obj.set("gravcomp", "1")
+        # If using original look, hide the plane visuals
+        if self.original:
+            for g in self.plane._obj.iter("geom"):
+                g.set("rgba", array_to_string([0, 0, 0, 0]))
 
         # ---------------- Plane-specific sampler -------------------------
         self.plane_sampler = UniformRandomSampler(
@@ -411,6 +421,9 @@ class LiftRand(ManipulationEnv):
             g.set("contype", "0")
             g.set("conaffinity", "0")
         self.floor_plane._obj.set("gravcomp", "1")
+        if self.original:
+            for g in self.floor_plane._obj.iter("geom"):
+                g.set("rgba", array_to_string([0, 0, 0, 0]))
         # ------------------------------------------------------------------
 
         # ---------------- Floor-plane-specific sampler ---------------------
