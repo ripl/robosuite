@@ -92,6 +92,7 @@ class CanRand(ManipulationEnv):
         renderer_config=None,
         min_goal_separation=0.15,
         place_tolerance=0.05,
+        original=False,
     ):
         # table settings
         self.table_full_size = table_full_size
@@ -102,6 +103,9 @@ class CanRand(ManipulationEnv):
         self.reward_scale = reward_scale
         self.reward_shaping = reward_shaping
         self.use_object_obs = use_object_obs
+
+        # original robosuite-style visualization toggle
+        self.original = original
 
         # placement + success parameters
         self.min_goal_separation = float(min_goal_separation)
@@ -195,10 +199,11 @@ class CanRand(ManipulationEnv):
         xpos = self.robots[0].robot_model.base_xpos_offset["table"](self.table_full_size[0])
         self.robots[0].robot_model.set_base_xpos(xpos)
 
-        # Make the robot mount / base invisible (hide all base geoms)
-        base_model = self.robots[0].robot_model.base
-        for geom in base_model.worldbody.iter("geom"):
-            geom.set("rgba", array_to_string([0, 0, 0, 0]))
+        # Make the robot mount / base invisible unless using original look
+        if not self.original:
+            base_model = self.robots[0].robot_model.base
+            for geom in base_model.worldbody.iter("geom"):
+                geom.set("rgba", array_to_string([0, 0, 0, 0]))
 
         # Table arena
         mujoco_arena = TableArena(
@@ -206,15 +211,16 @@ class CanRand(ManipulationEnv):
         )
         mujoco_arena.set_origin([0, 0, 0])
 
-        # Make floor, walls, and table invisible
-        mujoco_arena.floor.set("rgba", array_to_string([0, 0, 0, 0]))
-        for geom in mujoco_arena.worldbody.iter("geom"):
-            name = geom.get("name", "")
-            if name.startswith("wall_"):
-                geom.set("rgba", array_to_string([0, 0, 0, 0]))
-        for geom in [mujoco_arena.table_visual, mujoco_arena.table_collision] + mujoco_arena.table_legs_visual:
-            if geom is not None:
-                geom.set("rgba", array_to_string([0, 0, 0, 0]))
+        # Make floor, walls, and table invisible unless using original look
+        if not self.original:
+            mujoco_arena.floor.set("rgba", array_to_string([0, 0, 0, 0]))
+            for geom in mujoco_arena.worldbody.iter("geom"):
+                name = geom.get("name", "")
+                if name.startswith("wall_"):
+                    geom.set("rgba", array_to_string([0, 0, 0, 0]))
+            for geom in [mujoco_arena.table_visual, mujoco_arena.table_collision] + mujoco_arena.table_legs_visual:
+                if geom is not None:
+                    geom.set("rgba", array_to_string([0, 0, 0, 0]))
 
         # Table-top white plane (visual-only), sized to table top
         plane_half_size = [
@@ -238,6 +244,10 @@ class CanRand(ManipulationEnv):
             g.set("contype", "0")
             g.set("conaffinity", "0")
         self.plane._obj.set("gravcomp", "1")
+        # Hide table-top plane visuals for original look
+        if self.original:
+            for g in self.plane._obj.iter("geom"):
+                g.set("rgba", array_to_string([0, 0, 0, 0]))
 
         self.plane_sampler = UniformRandomSampler(
             name="PlaneSampler",
@@ -284,6 +294,10 @@ class CanRand(ManipulationEnv):
             g.set("contype", "0")
             g.set("conaffinity", "0")
         self.floor_plane._obj.set("gravcomp", "1")
+        # Hide floor plane visuals for original look
+        if self.original:
+            for g in self.floor_plane._obj.iter("geom"):
+                g.set("rgba", array_to_string([0, 0, 0, 0]))
 
         self.floor_plane_sampler = UniformRandomSampler(
             name="FloorPlaneSampler",

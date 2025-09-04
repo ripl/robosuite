@@ -54,6 +54,7 @@ class SquareRand(ManipulationEnv):
         camera_segmentations=None,
         renderer="mjviewer",
         renderer_config=None,
+        original=False,
     ):
         self.table_full_size = table_full_size
         self.table_friction = table_friction
@@ -62,6 +63,9 @@ class SquareRand(ManipulationEnv):
         self.reward_scale = reward_scale
         self.reward_shaping = reward_shaping
         self.use_object_obs = use_object_obs
+
+        # original robosuite-style visualization toggle
+        self.original = original
 
         super().__init__(
             robots=robots,
@@ -111,23 +115,25 @@ class SquareRand(ManipulationEnv):
         )
         arena.set_origin([0, 0, 0])
 
-        # Make robot base invisible
-        base_model = self.robots[0].robot_model.base
-        for geom in base_model.worldbody.iter("geom"):
-            geom.set("rgba", array_to_string([0, 0, 0, 0]))
-
-        # Make floor and walls invisible
-        arena.floor.set("rgba", array_to_string([0, 0, 0, 0]))
-        for geom in arena.worldbody.iter("geom"):
-            name = geom.get("name", "")
-            if name.startswith("wall_"):
+        # Make robot base invisible unless using original look
+        if not self.original:
+            base_model = self.robots[0].robot_model.base
+            for geom in base_model.worldbody.iter("geom"):
                 geom.set("rgba", array_to_string([0, 0, 0, 0]))
 
-        # Make table invisible (top, collision, and legs)
-        table_geoms = [arena.table_visual, arena.table_collision] + getattr(arena, "table_legs_visual", [])
-        for g in table_geoms:
-            if g is not None:
-                g.set("rgba", array_to_string([0, 0, 0, 0]))
+        # Make floor, walls, and table invisible unless using original look
+        if not self.original:
+            arena.floor.set("rgba", array_to_string([0, 0, 0, 0]))
+            for geom in arena.worldbody.iter("geom"):
+                name = geom.get("name", "")
+                if name.startswith("wall_"):
+                    geom.set("rgba", array_to_string([0, 0, 0, 0]))
+
+            # Make table invisible (top, collision, and legs)
+            table_geoms = [arena.table_visual, arena.table_collision] + getattr(arena, "table_legs_visual", [])
+            for g in table_geoms:
+                if g is not None:
+                    g.set("rgba", array_to_string([0, 0, 0, 0]))
 
         # Add table-top white plane (visual-only) aligned with the table
         plane_half_size = [
@@ -150,6 +156,10 @@ class SquareRand(ManipulationEnv):
             g.set("contype", "0")
             g.set("conaffinity", "0")
         self.table_plane._obj.set("gravcomp", "1")
+        # Hide table-top plane visuals for original look
+        if self.original:
+            for g in self.table_plane._obj.iter("geom"):
+                g.set("rgba", array_to_string([0, 0, 0, 0]))
 
         # Add floor plane with texture (visual-only)
         import os, robosuite
@@ -182,6 +192,10 @@ class SquareRand(ManipulationEnv):
             g.set("contype", "0")
             g.set("conaffinity", "0")
         self.floor_plane._obj.set("gravcomp", "1")
+        # Hide floor plane visuals for original look
+        if self.original:
+            for g in self.floor_plane._obj.iter("geom"):
+                g.set("rgba", array_to_string([0, 0, 0, 0]))
 
         # Randomizers for planes (match CanRand behavior)
         self.table_plane_sampler = UniformRandomSampler(
